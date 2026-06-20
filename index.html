@@ -13,7 +13,8 @@
         .panel { background: #151D30; padding: 20px; border-radius: 12px; border: 1px solid #23314E; }
         video { display: none; }
         canvas { width: 100%; border-radius: 8px; background: #000; }
-        .text-stream { font-size: 40px; font-weight: bold; color: #34D399; font-family: monospace; min-height: 60px; }
+        .text-stream { font-size: 40px; font-weight: bold; color: #34D399; font-family: monospace; min-height: 60px; margin-top: 10px; }
+        #status { font-weight: bold; color: #38BDF8; }
     </style>
 </head>
 <body>
@@ -24,8 +25,8 @@
     </div>
     <div class="panel">
         <div id="status">Booting Engine...</div>
-        <div class="text-stream" id="output">Initialize Camera...</div>
-        <canvas id="chart"></canvas>
+        <div class="text-stream" id="output">Initializing Camera Feed...</div>
+        <div style="margin-top:20px; height:200px;"><canvas id="chart"></canvas></div>
     </div>
 </div>
 
@@ -33,57 +34,135 @@
     const CHAR_MAP = "-abcdefghijklmnopqrstuvwxyz ";
     const TOTAL_FRAMES = 120, FEATURE_DIM = 225;
     let ortSession = null, buffer = new Float32Array(TOTAL_FRAMES * FEATURE_DIM);
-    const video = document.getElementById('webcam'), canvas = document.getElementById('skeletal-overlay'), ctx = canvas.getContext('2d');
+    
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('skeletal-overlay');
+    const ctx = canvas.getContext('2d');
+
+    // ChartJS Visualization Setup
+    let chartInstance = new Chart(document.getElementById('chart').getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: Array.from(CHAR_MAP),
+            datasets: [{ data: Array(28).fill(0), backgroundColor: '#38BDF8', barPercentage: 0.7 }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { min: -4, max: 4, grid: { color: '#23314E' }, ticks: { color: '#94A3B8' } },
+                x: { grid: { display: false }, ticks: { color: '#94A3B8' } }
+            }
+        }
+    });
 
     async function init() {
-        // Force single-threaded to bypass GitHub Pages/Browser security constraints
         ort.env.wasm.numThreads = 1;
         ort.env.wasm.proxy = false;
+        ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/";
         try {
+            console.log("[INIT] Attempting to load unified graph...");
             ortSession = await ort.InferenceSession.create('./kinesign_transformer.onnx');
-            document.getElementById('status').innerText = "Engine Active";
+            document.getElementById('status').innerText = "Engine Active — Ready to Transcribe";
+            document.getElementById('output').innerText = "Listening for signs...";
         } catch (e) {
-            document.getElementById('output').innerText = "Error: " + e.message;
+            document.getElementById('status').innerText = "ONNX Runtime Crash";
+            document.getElementById('output').style.color = "#EF4444";
+            document.getElementById('output').innerText = "ERROR: " + e.message;
+            console.error(e);
         }
     }
 
     function onResults(results) {
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 360;
+        
+        ctx.save();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
         
         let frameSlice = new Float32Array(FEATURE_DIM);
-        // Fill frameSlice with landmark data... (Skipped for brevity, use previous logic)
+
+        // FULL HISTORICAL EXTRACTOR LOOP: Extracts absolute joint landmarks frame-by-frame
+        function extractJoints(landmarks, offset, count, isHand) {
+            for (let i = 0; i < count; i++) {
+                let base = offset + (i * 3);
+                if (landmarks && landmarks[i]) {
+                    frameSlice[base] = landmarks[i].x;
+                    frameSlice[base + 1] = landmarks[i].y;
+                    frameSlice[base + 2] = landmarks[i].z;
+
+                    ctx.fillStyle = isHand ? '#34D399' : '#38BDF8';
+                    ctx.beginPath();
+                    ctx.arc(landmarks[i].x * canvas.width, landmarks[i].y * canvas.height, 4, 0, 2 * Math.PI);
+                    ctx.fill();
+                } else {
+                    frameSlice[base] = 0.0;
+                    frameSlice[base + 1] = 0.0;
+                    frameSlice[base + 2] = 0.0;
+                }
+            }
+        }
+
+        extractJoints(results.leftHandLandmarks, 0, 21, true);
+        extractJoints(results.rightHandLandmarks, 63, 21, true);
+        extractJoints(results.poseLandmarks, 126, 33, false);
         
+        // FIFO sliding queue shift
         buffer.set(buffer.subarray(FEATURE_DIM), 0);
         buffer.set(frameSlice, (TOTAL_FRAMES - 1) * FEATURE_DIM);
 
         if (ortSession) runInference();
+        ctx.restore();
     }
 
     async function runInference() {
-        const feeds = { 
-            input_coordinates: new ort.Tensor('float32', buffer, [1, TOTAL_FRAMES, FEATURE_DIM]),
-            sequence_lengths: new ort.Tensor('int64', new BigInt64Array([BigInt(TOTAL_FRAMES)]), [1])
-        };
-        const output = await ortSession.run(feeds);
-        const logits = output.transcription_logits.data;
-        
-        // CTC Greedy Decoding
-        let str = "", last = -1;
-        for (let f = 0; f < TOTAL_FRAMES; f++) {
-            let maxIdx = 0, maxVal = -Infinity;
-            for(let c=0; c<28; c++) {
-                if(logits[f*28 + c] > maxVal) { maxVal = logits[f*28 + c]; maxIdx = c; }
+        try {
+            const feeds = { 
+                input_coordinates: new ort.Tensor('float32', buffer, [1, TOTAL_FRAMES, FEATURE_DIM]),
+                sequence_lengths: new ort.Tensor('int64', new BigInt64Array([BigInt(TOTAL_FRAMES)]), [1])
+            };
+            const output = await ortSession.run(feeds);
+            const logits = output.transcription_logits.data;
+            
+            // CTC Greedy Timestep Timeline Decoding Alpha Search
+            let str = "", last = -1;
+            for (let f = 0; f < TOTAL_FRAMES; f++) {
+                let maxIdx = 0, maxVal = -Infinity;
+                for(let c = 0; c < 28; c++) {
+                    let logit = logits[f * 28 + c];
+                    if(logit > maxVal) { maxVal = logit; maxIdx = c; }
+                }
+                if(maxIdx !== 0 && maxIdx !== last) str += CHAR_MAP[maxIdx];
+                last = maxIdx;
             }
-            if(maxIdx !== 0 && maxIdx !== last) str += CHAR_MAP[maxIdx];
-            last = maxIdx;
+            
+            if (str.trim().length > 0) {
+                document.getElementById('output').innerText = str.toUpperCase();
+            }
+
+            // Map chart predictions to the latest live frame updates
+            let lastFrameOffset = (TOTAL_FRAMES - 1) * 28;
+            let activeLogits = [];
+            for(let i = 0; i < 28; i++) activeLogits.push(logits[lastFrameOffset + i]);
+            chartInstance.data.datasets[0].data = activeLogits;
+            chartInstance.update('none');
+        } catch (err) {
+            // Absorb step noise safely
         }
-        document.getElementById('output').innerText = str.toUpperCase();
     }
 
     const holistic = new Holistic({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${f}`});
+    holistic.setOptions({ modelComplexity: 1, smoothLandmarks: true });
     holistic.onResults(onResults);
-    new Camera(video, {onFrame: async () => await holistic.send({image: video}), width: 640, height: 360}).start();
+    
+    new Camera(video, {
+        onFrame: async () => await holistic.send({image: video}), 
+        width: 640, 
+        height: 360
+    }).start();
+    
     init();
 </script>
 </body>
