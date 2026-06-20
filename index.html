@@ -10,9 +10,10 @@
     <style>
         body { background: #0B0F19; color: #F8FAFC; font-family: sans-serif; margin: 0; padding: 20px; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1200px; margin: auto; }
-        .panel { background: #151D30; padding: 20px; border-radius: 12px; border: 1px solid #23314E; }
+        .panel { background: #151D30; padding: 20px; border-radius: 12px; border: 1px solid #23314E; position: relative; }
+        .video-wrapper { position: relative; width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; }
         video { display: none; }
-        canvas { width: 100%; border-radius: 8px; background: #000; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
         .text-stream { font-size: 42px; font-weight: bold; color: #34D399; font-family: monospace; min-height: 60px; margin-top: 10px; background: #0B0F19; padding: 15px; border-radius: 8px; border: 1px solid #23314E; letter-spacing: 1px; }
         #status { font-weight: bold; color: #38BDF8; margin-bottom: 5px; }
     </style>
@@ -20,8 +21,10 @@
 <body>
 <div class="grid">
     <div class="panel">
-        <video id="webcam" autoplay playsinline muted></video>
-        <canvas id="skeletal-overlay"></canvas>
+        <div class="video-wrapper">
+            <video id="webcam" autoplay playsinline muted></video>
+            <canvas id="skeletal-overlay"></canvas>
+        </div>
     </div>
     <div class="panel">
         <div id="status">Booting Neural Network Engine...</div>
@@ -65,18 +68,24 @@
         try {
             ortSession = await ort.InferenceSession.create('./kinesign_transformer.onnx');
             document.getElementById('status').innerText = "Conv-Transformer Edge Transduction Session Built";
-            document.getElementById('output').innerText = "Listening for gestures...";
+            if(document.getElementById('output').innerText === "Initializing Video Tracks...") {
+                document.getElementById('output').innerText = "Listening for gestures...";
+            }
         } catch (e) {
-            document.getElementById('status').innerText = "Compilation Failure Error";
+            document.getElementById('status').innerText = "ONNX Initializer Error";
             document.getElementById('output').style.color = "#EF4444";
             document.getElementById('output').innerText = "ONNX Crash: " + e.message;
         }
     }
 
     function onResults(results) {
-        // Fallback layout bounds scaling configuration
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 360;
+        const currentWidth = video.videoWidth || 640;
+        const currentHeight = video.videoHeight || 360;
+        
+        if (canvas.width !== currentWidth || canvas.height !== currentHeight) {
+            canvas.width = currentWidth;
+            canvas.height = currentHeight;
+        }
         
         ctx.save();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -104,9 +113,7 @@
         buffer.set(buffer.subarray(FEATURE_DIM), 0);
         buffer.set(frameSlice, (TOTAL_FRAMES - 1) * FEATURE_DIM);
 
-        if (ortSession) {
-            runInference();
-        }
+        if (ortSession) runInference();
         ctx.restore();
     }
 
@@ -146,26 +153,42 @@
             chartInstance.data.datasets[0].data = activeLogits;
             chartInstance.update('none');
         } catch (err) {
-            console.error("[INFERENCE EXCEPTION]", err);
+            console.error(err);
         }
     }
 
-    const holistic = new Holistic({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${f}`});
-    holistic.setOptions({ modelComplexity: 1, smoothLandmarks: true });
+    // HARDENED CDN LOADER RESOLVER PASS Bypasses Sandbox fetch limitations
+    const holistic = new Holistic({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/${file}`;
+    }});
+    
+    holistic.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        enableSegmentation: false,
+        refineFaceLandmarks: false
+    });
     holistic.onResults(onResults);
     
-    // Explicit camera object tracking thread initialization pass
-    const camera = new Camera(video, {
-        onFrame: async () => { await holistic.send({image: video}); },
-        width: 640,
-        height: 360
-    });
-    
-    // Fire camera explicitly independent of system loading calls
-    camera.start().catch(err => {
-        document.getElementById('output').innerText = "Camera Access Blocked by Browser/System Settings.";
-    });
-    
+    // Direct browser MediaDevices constraint fallback execution layer
+    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 } })
+        .then((stream) => {
+            video.srcObject = stream;
+            video.addEventListener('loadedmetadata', () => {
+                const camera = new Camera(video, {
+                    onFrame: async () => { await holistic.send({image: video}); },
+                    width: 640,
+                    height: 360
+                });
+                camera.start();
+                console.log("[HARDWARE] Camera streaming pipeline fully bound.");
+            });
+        })
+        .catch(err => {
+            document.getElementById('output').innerText = "Camera Connection Aborted. Check browser permissions toggles.";
+            console.error(err);
+        });
+        
     initONNX();
 </script>
 </body>
