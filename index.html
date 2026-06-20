@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>KineSign AI — Production Transcription Pipeline</title>
+    <title>KineSign AI — Infinite Open-Vocabulary Transduction Client</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.1/dist/ort.min.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { background: #0B0F19; color: #F8FAFC; font-family: sans-serif; margin: 0; padding: 20px; }
@@ -13,8 +13,8 @@
         .panel { background: #151D30; padding: 20px; border-radius: 12px; border: 1px solid #23314E; }
         video { display: none; }
         canvas { width: 100%; border-radius: 8px; background: #000; }
-        .text-stream { font-size: 40px; font-weight: bold; color: #34D399; font-family: monospace; min-height: 60px; margin-top: 10px; }
-        #status { font-weight: bold; color: #38BDF8; }
+        .text-stream { font-size: 42px; font-weight: bold; color: #34D399; font-family: monospace; min-height: 60px; margin-top: 10px; background: #0B0F19; padding: 15px; border-radius: 8px; border: 1px solid #23314E; letter-spacing: 1px; }
+        #status { font-weight: bold; color: #38BDF8; margin-bottom: 5px; }
     </style>
 </head>
 <body>
@@ -24,9 +24,10 @@
         <canvas id="skeletal-overlay"></canvas>
     </div>
     <div class="panel">
-        <div id="status">Booting Engine...</div>
-        <div class="text-stream" id="output">Initializing Camera Feed...</div>
-        <div style="margin-top:20px; height:200px;"><canvas id="chart"></canvas></div>
+        <div id="status">Booting Neural Network Engine...</div>
+        <div style="font-size: 14px; color: #94A3B8;">Decoded Text via Greedy CTC Search (Infinite Open Lexicon):</div>
+        <div class="text-stream" id="output">Initializing Video Tracks...</div>
+        <div style="margin-top:20px; height:180px;"><canvas id="chart"></canvas></div>
     </div>
 </div>
 
@@ -43,7 +44,7 @@
         type: 'bar',
         data: {
             labels: Array.from(CHAR_MAP),
-            datasets: [{ data: Array(28).fill(0), backgroundColor: '#38BDF8', barPercentage: 0.7 }]
+            datasets: [{ data: Array(28).fill(0), backgroundColor: '#38BDF8', barPercentage: 0.75 }]
         },
         options: {
             responsive: true,
@@ -56,18 +57,19 @@
         }
     });
 
-    async function init() {
+    async function initONNX() {
         ort.env.wasm.numThreads = 1;
         ort.env.wasm.proxy = false;
-        ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/";
+        // Aligned internal WebAssembly assembly binaries to 1.17.1
+        ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.1/dist/";
         try {
             ortSession = await ort.InferenceSession.create('./kinesign_transformer.onnx');
-            document.getElementById('status').innerText = "Engine Active — Ready to Transcribe";
-            document.getElementById('output').innerText = "Listening for signs...";
+            document.getElementById('status').innerText = "Conv-Transformer Edge Transduction Session Built";
+            document.getElementById('output').innerText = "Listening for gestures...";
         } catch (e) {
-            document.getElementById('status').innerText = "ONNX Runtime Crash";
+            document.getElementById('status').innerText = "Compilation Failure Error";
             document.getElementById('output').style.color = "#EF4444";
-            document.getElementById('output').innerText = "ERROR: " + e.message;
+            document.getElementById('output').innerText = "ONNX Crash: " + e.message;
         }
     }
 
@@ -88,9 +90,7 @@
                     frameSlice[base + 1] = landmarks[i].y;
                     frameSlice[base + 2] = landmarks[i].z;
                     ctx.fillStyle = isHand ? '#34D399' : '#38BDF8';
-                    ctx.beginPath();
-                    ctx.arc(landmarks[i].x * canvas.width, landmarks[i].y * canvas.height, 4, 0, 2 * Math.PI);
-                    ctx.fill();
+                    ctx.beginPath(); ctx.arc(landmarks[i].x * canvas.width, landmarks[i].y * canvas.height, 4, 0, 2 * Math.PI); ctx.fill();
                 }
             }
         }
@@ -108,31 +108,32 @@
 
     async function runInference() {
         try {
-            const feeds = { 
-                input_coordinates: new ort.Tensor('float32', buffer, [1, TOTAL_FRAMES, FEATURE_DIM]),
-                sequence_lengths: new ort.Tensor('int64', new BigInt64Array([BigInt(TOTAL_FRAMES)]), [1])
-            };
+            const feeds = { input_coordinates: new ort.Tensor('float32', buffer, [1, TOTAL_FRAMES, FEATURE_DIM]) };
             const output = await ortSession.run(feeds);
             const logits = output.transcription_logits.data;
             
-            let str = "", last = -1;
+            let transcribedString = "", precedingTokenIdx = -1;
             for (let f = 0; f < TOTAL_FRAMES; f++) {
-                let maxIdx = 0, maxVal = -Infinity;
+                let argmaxClassIdx = 0, peakValue = -Infinity;
                 for(let c = 0; c < 28; c++) {
-                    let logit = logits[f * 28 + c];
-                    if(logit > maxVal) { maxVal = logit; maxIdx = c; }
+                    let cellValue = logits[f * 28 + c];
+                    if(cellValue > peakValue) { peakValue = cellValue; argmaxClassIdx = c; }
                 }
-                if(maxIdx !== 0 && maxIdx !== last) str += CHAR_MAP[maxIdx];
-                last = maxIdx;
+                if(argmaxClassIdx !== 0 && argmaxClassIdx !== precedingTokenIdx) {
+                    transcribedString += CHAR_MAP[argmaxClassIdx];
+                }
+                precedingTokenIdx = argmaxClassIdx;
             }
             
-            if (str.trim().length > 0) {
-                document.getElementById('output').innerText = str.toUpperCase();
+            if (transcribedString.trim().length > 0) {
+                document.getElementById('output').innerText = transcribedString.toUpperCase();
+            } else {
+                document.getElementById('output').innerText = "Listening for gestures...";
             }
 
-            let lastFrameOffset = (TOTAL_FRAMES - 1) * 28;
+            let frameOffset = (TOTAL_FRAMES - 1) * 28;
             let activeLogits = [];
-            for(let i = 0; i < 28; i++) activeLogits.push(logits[lastFrameOffset + i]);
+            for(let i = 0; i < 28; i++) activeLogits.push(logits[frameOffset + i]);
             chartInstance.data.datasets[0].data = activeLogits;
             chartInstance.update('none');
         } catch (err) {}
@@ -143,7 +144,7 @@
     holistic.onResults(onResults);
     
     new Camera(video, {onFrame: async () => await holistic.send({image: video}), width: 640, height: 360}).start();
-    init();
+    initONNX();
 </script>
 </body>
 </html>
