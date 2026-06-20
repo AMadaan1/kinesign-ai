@@ -20,7 +20,7 @@
 <body>
 <div class="grid">
     <div class="panel">
-        <video id="webcam" playsinline muted></video>
+        <video id="webcam" autoplay playsinline muted></video>
         <canvas id="skeletal-overlay"></canvas>
     </div>
     <div class="panel">
@@ -74,8 +74,10 @@
     }
 
     function onResults(results) {
+        // Fallback layout bounds scaling configuration
         canvas.width = video.videoWidth || 640;
         canvas.height = video.videoHeight || 360;
+        
         ctx.save();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
@@ -99,7 +101,6 @@
         extractJoints(results.rightHandLandmarks, 63, 21, true);
         extractJoints(results.poseLandmarks, 126, 33, false);
         
-        // Push current frame data into the rolling history window
         buffer.set(buffer.subarray(FEATURE_DIM), 0);
         buffer.set(frameSlice, (TOTAL_FRAMES - 1) * FEATURE_DIM);
 
@@ -111,7 +112,6 @@
 
     async function runInference() {
         try {
-            // FIXED SHAPE PACKING: Create explicit copy to prevent float-corruption drops
             const inferenceInputBuffer = new Float32Array(buffer);
             const inputTensor = new ort.Tensor('float32', inferenceInputBuffer, [1, 120, 225]);
             
@@ -119,7 +119,6 @@
             const outputMap = await ortSession.run(feeds);
             const logits = outputMap.transcription_logits.data;
             
-            // GREEDY CTC DECODER STRIP
             let transcribedString = "", precedingTokenIdx = -1;
             for (let f = 0; f < TOTAL_FRAMES; f++) {
                 let argmaxClassIdx = 0, peakValue = -Infinity;
@@ -139,7 +138,6 @@
                 document.getElementById('output').innerText = "Listening for gestures...";
             }
 
-            // Push character distribution configurations directly to chart canvas elements
             let frameOffset = (TOTAL_FRAMES - 1) * 28;
             let activeLogits = [];
             for(let i = 0; i < 28; i++) {
@@ -156,7 +154,18 @@
     holistic.setOptions({ modelComplexity: 1, smoothLandmarks: true });
     holistic.onResults(onResults);
     
-    new Camera(video, {onFrame: async () => await holistic.send({image: video}), width: 640, height: 360}).start();
+    // Explicit camera object tracking thread initialization pass
+    const camera = new Camera(video, {
+        onFrame: async () => { await holistic.send({image: video}); },
+        width: 640,
+        height: 360
+    });
+    
+    // Fire camera explicitly independent of system loading calls
+    camera.start().catch(err => {
+        document.getElementById('output').innerText = "Camera Access Blocked by Browser/System Settings.";
+    });
+    
     initONNX();
 </script>
 </body>
