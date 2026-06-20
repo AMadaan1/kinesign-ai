@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>KineSign AI — Infinite Open-Vocabulary Transduction Client</title>
+    <title>KineSign AI — High-Accuracy Open-Vocabulary Fingerspelling</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -38,7 +38,6 @@
     const CHAR_MAP = "-abcdefghijklmnopqrstuvwxyz ";
     const TOTAL_FRAMES = 120, FEATURE_DIM = 225;
     let ortSession = null;
-    let isInferring = false;
     let buffer = new Float32Array(TOTAL_FRAMES * FEATURE_DIM);
     
     const video = document.getElementById('webcam');
@@ -63,8 +62,8 @@
     });
 
     async function initONNX() {
-        ort.env.wasm.numThreads = navigator.hardwareConcurrency ? Math.min(4, navigator.hardwareConcurrency) : 2;
-        ort.env.wasm.proxy = true; // run inference in a Worker, not the main UI thread
+        ort.env.wasm.numThreads = 1;
+        ort.env.wasm.proxy = false;
         ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/";
         try {
             ortSession = await ort.InferenceSession.create('./kinesign_transformer.onnx');
@@ -82,7 +81,6 @@
     function onResults(results) {
         const currentWidth = video.videoWidth || 640;
         const currentHeight = video.videoHeight || 360;
-        
         if (canvas.width !== currentWidth || canvas.height !== currentHeight) {
             canvas.width = currentWidth;
             canvas.height = currentHeight;
@@ -94,37 +92,43 @@
         
         let frameSlice = new Float32Array(FEATURE_DIM);
 
-        function extractJoints(landmarks, offset, count, isHand) {
-            for (let i = 0; i < count; i++) {
-                let base = offset + (i * 3);
-                if (landmarks && landmarks[i]) {
-                    frameSlice[base] = landmarks[i].x;
-                    frameSlice[base + 1] = landmarks[i].y;
-                    frameSlice[base + 2] = landmarks[i].z;
-                    ctx.fillStyle = isHand ? '#34D399' : '#38BDF8';
-                    ctx.beginPath(); ctx.arc(landmarks[i].x * canvas.width, landmarks[i].y * canvas.height, 4, 0, 2 * Math.PI); ctx.fill();
+        // Parse up to 2 detected hands directly into the layout indices
+        if (results.multiHandLandmarks && results.multiHandedness) {
+            for (let h = 0; h < results.multiHandLandmarks.length; h++) {
+                let landmarks = results.multiHandLandmarks[h];
+                let label = results.multiHandedness[h].label; // "Left" or "Right"
+                
+                // Align to matching 225-D vector positions (Left: 0-62, Right: 63-125)
+                let offset = (label === "Left") ? 0 : 63;
+                
+                for (let i = 0; i < 21; i++) {
+                    let base = offset + (i * 3);
+                    if (landmarks[i]) {
+                        frameSlice[base] = landmarks[i].x;
+                        frameSlice[base + 1] = landmarks[i].y;
+                        frameSlice[base + 2] = landmarks[i].z;
+                        
+                        ctx.fillStyle = '#34D399';
+                        ctx.beginPath();
+                        ctx.arc(landmarks[i].x * canvas.width, landmarks[i].y * canvas.height, 4, 0, 2 * Math.PI);
+                        ctx.fill();
+                    }
                 }
             }
         }
+        // Pose features (126-224) left as 0.0 padding to keep consistency with the 225-D model format
 
-        extractJoints(results.leftHandLandmarks, 0, 21, true);
-        extractJoints(results.rightHandLandmarks, 63, 21, true);
-        extractJoints(results.poseLandmarks, 126, 33, false);
-        
         buffer.set(buffer.subarray(FEATURE_DIM), 0);
         buffer.set(frameSlice, (TOTAL_FRAMES - 1) * FEATURE_DIM);
 
-        if (ortSession) runInference(); // skipped automatically while one is already in flight
+        if (ortSession) runInference();
         ctx.restore();
     }
 
     async function runInference() {
-        if (isInferring) return; // previous inference still running — drop this frame
-        isInferring = true;
         try {
             const inferenceInputBuffer = new Float32Array(buffer);
             const inputTensor = new ort.Tensor('float32', inferenceInputBuffer, [1, 120, 225]);
-            
             const feeds = { input_coordinates: inputTensor };
             const outputMap = await ortSession.run(feeds);
             const logits = outputMap.transcription_logits.data;
@@ -150,47 +154,42 @@
 
             let frameOffset = (TOTAL_FRAMES - 1) * 28;
             let activeLogits = [];
-            for(let i = 0; i < 28; i++) {
-                activeLogits.push(logits[frameOffset + i]);
-            }
+            for(let i = 0; i < 28; i++) activeLogits.push(logits[frameOffset + i]);
             chartInstance.data.datasets[0].data = activeLogits;
             chartInstance.update('none');
         } catch (err) {
             console.error(err);
-        } finally {
-            isInferring = false;
         }
     }
 
-    // HARDENED CDN LOADER RESOLVER PASS Bypasses Sandbox fetch limitations
-    const holistic = new Holistic({locateFile: (file) => {
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/${file}`;
+    // Connects directly to the stable MediaPipe Hands module endpoint
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
     }});
     
-    holistic.setOptions({
+    hands.setOptions({
+        maxNumHands: 2,
         modelComplexity: 1,
-        smoothLandmarks: true,
-        enableSegmentation: false,
-        refineFaceLandmarks: false
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
     });
-    holistic.onResults(onResults);
+    hands.onResults(onResults);
     
-    // Direct browser MediaDevices constraint fallback execution layer
     navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 } })
         .then((stream) => {
             video.srcObject = stream;
             video.addEventListener('loadedmetadata', () => {
                 const camera = new Camera(video, {
-                    onFrame: async () => { await holistic.send({image: video}); },
+                    onFrame: async () => { await hands.send({image: video}); },
                     width: 640,
                     height: 360
                 });
                 camera.start();
-                console.log("[HARDWARE] Camera streaming pipeline fully bound.");
+                console.log("[HARDWARE] Dedicated hand tracking pipeline online.");
             });
         })
         .catch(err => {
-            document.getElementById('output').innerText = "Camera Connection Aborted. Check browser permissions toggles.";
+            document.getElementById('output').innerText = "Webcam blocked.";
             console.error(err);
         });
         
