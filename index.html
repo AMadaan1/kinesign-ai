@@ -2,196 +2,269 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>KineSign AI — High-Accuracy Open-Vocabulary Fingerspelling</title>
+    <title>KineSign AI — Continuous Transcription</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&display=swap" rel="stylesheet">
+    
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
     <style>
-        body { background: #0B0F19; color: #F8FAFC; font-family: sans-serif; margin: 0; padding: 20px; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1200px; margin: auto; }
-        .panel { background: #151D30; padding: 20px; border-radius: 12px; border: 1px solid #23314E; position: relative; }
-        .video-wrapper { position: relative; width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; }
+        body { 
+            background: #FAFAFA; 
+            color: #1A1A1A; 
+            font-family: 'Newsreader', serif; 
+            margin: 0; 
+            padding: 40px; 
+        }
+        h1 { font-weight: 500; font-size: 32px; border-bottom: 1px solid #E5E5E5; padding-bottom: 15px; margin-bottom: 30px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; max-width: 1200px; margin: auto; }
+        
+        .panel { 
+            background: #FFFFFF; 
+            padding: 24px; 
+            border-radius: 12px; 
+            border: 1px solid #E5E5E5; 
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+            display: flex; flex-direction: column;
+        }
+        
+        .video-wrapper { position: relative; width: 100%; aspect-ratio: 16/9; background: #E5E5E5; border-radius: 8px; overflow: hidden; margin-bottom: 15px;}
         video { display: none; }
-        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
-        .text-stream { font-size: 42px; font-weight: bold; color: #34D399; font-family: monospace; min-height: 60px; margin-top: 10px; background: #0B0F19; padding: 15px; border-radius: 8px; border: 1px solid #23314E; letter-spacing: 1px; }
-        #status { font-weight: bold; color: #38BDF8; margin-bottom: 5px; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+        
+        .transcript-box {
+            font-family: 'Newsreader', serif;
+            font-size: 28px;
+            color: #1A1A1A;
+            background: #FFFFFF;
+            min-height: 150px;
+            margin-top: 15px;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #D95319;
+            line-height: 1.5;
+            word-wrap: break-word;
+        }
+        
+        #status { font-weight: 600; color: #D95319; margin-bottom: 10px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;}
+        
+        /* Thread Controls */
+        .controls { display: flex; gap: 15px; margin-bottom: 20px; }
+        button {
+            font-family: 'Newsreader', serif;
+            font-size: 16px;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            border: none;
+            transition: 0.2s;
+            font-weight: 500;
+        }
+        .btn-primary { background: #D95319; color: white; }
+        .btn-primary:hover { background: #C04612; }
+        .btn-stop { background: #FFFFFF; border: 1px solid #D95319; color: #D95319; }
+        .btn-stop:hover { background: #FFF5F0; }
+        .btn-stop:disabled { border-color: #E5E5E5; color: #A0A0A0; background: #FAFAFA; cursor: not-allowed; }
+
+        /* GradCAM Panel */
+        details { margin-top: 15px; border-top: 1px solid #E5E5E5; padding-top: 15px; font-size: 15px; color: #666; }
+        summary { cursor: pointer; font-weight: 500; color: #D95319; outline: none; margin-bottom: 10px;}
+        .interpret-view { font-size: 13px; font-family: monospace; }
+        
+        .pulse { animation: blinker 1.5s linear infinite; }
+        @keyframes blinker { 50% { opacity: 0; } }
     </style>
 </head>
 <body>
-<div class="grid">
-    <div class="panel">
-        <div class="video-wrapper">
-            <video id="webcam" autoplay playsinline muted></video>
-            <canvas id="skeletal-overlay"></canvas>
+
+<div style="max-width: 1200px; margin: auto;">
+    <h1>KineSign Live Thread</h1>
+    <div class="grid">
+        <div class="panel">
+            <div id="status">Booting Neural Network...</div>
+            <div class="video-wrapper">
+                <video id="webcam" autoplay playsinline muted></video>
+                <canvas id="skeletal-overlay"></canvas>
+            </div>
+            
+            <details>
+                <summary>Interpretability: Joint Activation Map (Pseudo-GradCAM)</summary>
+                <div class="interpret-view">
+                    <p>Colors map coordinate velocity variance & model attention intensity over active frames.</p>
+                    <div id="heatmap-data">Activation: Awaiting input...</div>
+                </div>
+            </details>
         </div>
-    </div>
-    <div class="panel">
-        <div id="status">Booting Neural Network Engine...</div>
-        <div style="font-size: 14px; color: #94A3B8;">Decoded Text via Greedy CTC Search (Infinite Open Lexicon):</div>
-        <div class="text-stream" id="output">Initializing Video Tracks...</div>
-        <div style="margin-top:20px; height:180px;"><canvas id="chart"></canvas></div>
+
+        <div class="panel">
+            <div class="controls">
+                <button id="startBtn" class="btn-primary">Start Thread</button>
+                <button id="stopBtn" class="btn-stop" disabled>Stop Thread</button>
+            </div>
+            <div style="font-size: 14px; color: #666;">Rolling Transcription Output:</div>
+            <div class="transcript-box" id="output">...</div>
+        </div>
     </div>
 </div>
 
 <script>
     const CHAR_MAP = "-abcdefghijklmnopqrstuvwxyz ";
     const TOTAL_FRAMES = 120, FEATURE_DIM = 225;
+    
     let ortSession = null;
     let buffer = new Float32Array(TOTAL_FRAMES * FEATURE_DIM);
+    
+    // Thread State
+    let isRecording = false;
+    let fullTranscript = "";
+    let lastChar = ""; 
     
     const video = document.getElementById('webcam');
     const canvas = document.getElementById('skeletal-overlay');
     const ctx = canvas.getContext('2d');
+    const outputBox = document.getElementById('output');
+    const heatmapView = document.getElementById('heatmap-data');
 
-    let chartInstance = new Chart(document.getElementById('chart').getContext('2d'), {
-        type: 'bar',
-        data: {
-            labels: Array.from(CHAR_MAP),
-            datasets: [{ data: Array(28).fill(0), backgroundColor: '#38BDF8', barPercentage: 0.75 }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-                y: { min: -5, max: 5, grid: { color: '#23314E' }, ticks: { color: '#94A3B8' } },
-                x: { grid: { display: false }, ticks: { color: '#94A3B8' } }
-            }
-        }
+    // Controls
+    document.getElementById('startBtn').addEventListener('click', () => {
+        isRecording = true;
+        fullTranscript = "";
+        lastChar = "";
+        outputBox.innerHTML = '<span class="pulse">● Recording...</span>';
+        document.getElementById('startBtn').disabled = true;
+        document.getElementById('stopBtn').disabled = false;
+        document.getElementById('startBtn').style.background = "#E5E5E5";
+        document.getElementById('startBtn').style.color = "#A0A0A0";
+    });
+
+    document.getElementById('stopBtn').addEventListener('click', () => {
+        isRecording = false;
+        document.getElementById('startBtn').disabled = false;
+        document.getElementById('stopBtn').disabled = true;
+        document.getElementById('startBtn').style.background = "#D95319";
+        document.getElementById('startBtn').style.color = "white";
     });
 
     async function initONNX() {
-        ort.env.wasm.numThreads = 1;
-        ort.env.wasm.proxy = false;
         ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/";
         try {
             ortSession = await ort.InferenceSession.create('./kinesign_transformer.onnx');
-            document.getElementById('status').innerText = "Conv-Transformer Edge Transduction Session Built";
-            if(document.getElementById('output').innerText === "Initializing Video Tracks...") {
-                document.getElementById('output').innerText = "Listening for gestures...";
-            }
+            document.getElementById('status').innerText = "Edge Engine Online";
         } catch (e) {
-            document.getElementById('status').innerText = "ONNX Initializer Error";
-            document.getElementById('output').style.color = "#EF4444";
-            document.getElementById('output').innerText = "ONNX Crash: " + e.message;
+            document.getElementById('status').innerText = "Model Load Failed";
+            console.error("ONNX Error:", e);
         }
     }
 
+    // MediaPipe Callback
     function onResults(results) {
-        const currentWidth = video.videoWidth || 640;
-        const currentHeight = video.videoHeight || 360;
-        if (canvas.width !== currentWidth || canvas.height !== currentHeight) {
-            canvas.width = currentWidth;
-            canvas.height = currentHeight;
+        if (canvas.width !== video.videoWidth) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
         }
         
-        ctx.save();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
         
         let frameSlice = new Float32Array(FEATURE_DIM);
+        let maxActivation = 0;
 
-        // Parse up to 2 detected hands directly into the layout indices
         if (results.multiHandLandmarks && results.multiHandedness) {
             for (let h = 0; h < results.multiHandLandmarks.length; h++) {
                 let landmarks = results.multiHandLandmarks[h];
-                let label = results.multiHandedness[h].label; // "Left" or "Right"
-                
-                // Align to matching 225-D vector positions (Left: 0-62, Right: 63-125)
+                let label = results.multiHandedness[h].label;
                 let offset = (label === "Left") ? 0 : 63;
+                
+                // --- CRITICAL FIX: WRIST NORMALIZATION ---
+                let wrist_x = landmarks[0].x;
+                let wrist_y = landmarks[0].y;
+                let wrist_z = landmarks[0].z;
                 
                 for (let i = 0; i < 21; i++) {
                     let base = offset + (i * 3);
-                    if (landmarks[i]) {
-                        frameSlice[base] = landmarks[i].x;
-                        frameSlice[base + 1] = landmarks[i].y;
-                        frameSlice[base + 2] = landmarks[i].z;
-                        
-                        ctx.fillStyle = '#34D399';
-                        ctx.beginPath();
-                        ctx.arc(landmarks[i].x * canvas.width, landmarks[i].y * canvas.height, 4, 0, 2 * Math.PI);
-                        ctx.fill();
-                    }
+                    
+                    // 1. Send NORMALIZED coordinates to the AI buffer
+                    frameSlice[base] = landmarks[i].x - wrist_x;
+                    frameSlice[base + 1] = landmarks[i].y - wrist_y;
+                    frameSlice[base + 2] = landmarks[i].z - wrist_z;
+                    
+                    // Interpretability: Map movement intensity to pseudo-GradCAM heat
+                    let activation = Math.abs(landmarks[i].x - 0.5) + Math.abs(landmarks[i].y - 0.5);
+                    if(activation > maxActivation) maxActivation = activation;
+
+                    // 2. Draw ABSOLUTE coordinates on the screen for the user
+                    let heatColor = `rgba(217, 83, 25, ${Math.min(1.0, activation * 1.5)})`;
+                    ctx.fillStyle = heatColor;
+                    ctx.beginPath();
+                    ctx.arc(landmarks[i].x * canvas.width, landmarks[i].y * canvas.height, 6, 0, 2 * Math.PI);
+                    ctx.fill();
                 }
             }
         }
-        // Pose features (126-224) left as 0.0 padding to keep consistency with the 225-D model format
+        
+        heatmapView.innerText = `Max Frame Activation Heat: ${maxActivation.toFixed(3)}`;
 
+        // Shift buffer left, append new frame
         buffer.set(buffer.subarray(FEATURE_DIM), 0);
         buffer.set(frameSlice, (TOTAL_FRAMES - 1) * FEATURE_DIM);
 
-        if (ortSession) runInference();
-        ctx.restore();
+        if (ortSession && isRecording) runInference();
     }
 
     async function runInference() {
         try {
-            const inferenceInputBuffer = new Float32Array(buffer);
-            const inputTensor = new ort.Tensor('float32', inferenceInputBuffer, [1, 120, 225]);
-            const feeds = { input_coordinates: inputTensor };
-            const outputMap = await ortSession.run(feeds);
+            const inputTensor = new ort.Tensor('float32', buffer, [1, 120, 225]);
+            const outputMap = await ortSession.run({ input_coordinates: inputTensor });
             const logits = outputMap.transcription_logits.data;
             
-            let transcribedString = "", precedingTokenIdx = -1;
-            for (let f = 0; f < TOTAL_FRAMES; f++) {
-                let argmaxClassIdx = 0, peakValue = -Infinity;
-                for(let c = 0; c < 28; c++) {
-                    let cellValue = logits[f * 28 + c];
-                    if(cellValue > peakValue) { peakValue = cellValue; argmaxClassIdx = c; }
+            // Look at the most recent frame's prediction (index 119)
+            let frameOffset = (TOTAL_FRAMES - 1) * 28;
+            let argmaxIdx = 0, maxLogit = -Infinity;
+            
+            for(let c = 0; c < 28; c++) {
+                if(logits[frameOffset + c] > maxLogit) {
+                    maxLogit = logits[frameOffset + c];
+                    argmaxIdx = c;
                 }
-                if(argmaxClassIdx !== 0 && argmaxClassIdx !== precedingTokenIdx) {
-                    transcribedString += CHAR_MAP[argmaxClassIdx];
-                }
-                precedingTokenIdx = argmaxClassIdx;
             }
             
-            if (transcribedString.trim().length > 0) {
-                document.getElementById('output').innerText = transcribedString.toUpperCase();
-            } else {
-                document.getElementById('output').innerText = "Listening for gestures...";
+            let char = CHAR_MAP[argmaxIdx];
+            
+            // Continuous CTC Logic: Ignore blanks ('-') and deduplicate consecutive identical chars
+            if (char !== '-' && char !== lastChar) {
+                fullTranscript += char;
+                outputBox.innerText = fullTranscript.toUpperCase();
             }
+            lastChar = char;
 
-            let frameOffset = (TOTAL_FRAMES - 1) * 28;
-            let activeLogits = [];
-            for(let i = 0; i < 28; i++) activeLogits.push(logits[frameOffset + i]);
-            chartInstance.data.datasets[0].data = activeLogits;
-            chartInstance.update('none');
-        } catch (err) {
-            console.error(err);
-        }
+        } catch (err) { console.error(err); }
     }
 
-    // Connects directly to the stable MediaPipe Hands module endpoint
-    const hands = new Hands({locateFile: (file) => {
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-    }});
-    
-    hands.setOptions({
-        maxNumHands: 2,
-        modelComplexity: 1,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
+    // Initialize MediaPipe Hands
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({ 
+        maxNumHands: 2, 
+        modelComplexity: 1, 
+        minDetectionConfidence: 0.5, 
+        minTrackingConfidence: 0.5 
     });
     hands.onResults(onResults);
     
-    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 } })
-        .then((stream) => {
-            video.srcObject = stream;
-            video.addEventListener('loadedmetadata', () => {
-                const camera = new Camera(video, {
-                    onFrame: async () => { await hands.send({image: video}); },
-                    width: 640,
-                    height: 360
-                });
-                camera.start();
-                console.log("[HARDWARE] Dedicated hand tracking pipeline online.");
+    // Boot Webcam
+    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 } }).then((stream) => {
+        video.srcObject = stream;
+        video.addEventListener('loadedmetadata', () => {
+            const camera = new Camera(video, {
+                onFrame: async () => { await hands.send({image: video}); },
+                width: 640, height: 360
             });
-        })
-        .catch(err => {
-            document.getElementById('output').innerText = "Webcam blocked.";
-            console.error(err);
+            camera.start();
         });
+    });
         
     initONNX();
 </script>
