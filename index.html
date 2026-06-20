@@ -14,56 +14,32 @@
 
     <style>
         body { 
-            background: #FAFAFA; 
-            color: #1A1A1A; 
-            font-family: 'Newsreader', serif; 
-            margin: 0; 
-            padding: 40px; 
+            background: #FAFAFA; color: #1A1A1A; font-family: 'Newsreader', serif; margin: 0; padding: 40px; 
         }
         h1 { font-weight: 500; font-size: 32px; border-bottom: 1px solid #E5E5E5; padding-bottom: 15px; margin-bottom: 30px; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; max-width: 1200px; margin: auto; }
         
         .panel { 
-            background: #FFFFFF; 
-            padding: 24px; 
-            border-radius: 12px; 
-            border: 1px solid #E5E5E5; 
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-            display: flex; flex-direction: column;
+            background: #FFFFFF; padding: 24px; border-radius: 12px; border: 1px solid #E5E5E5; 
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); display: flex; flex-direction: column;
         }
         
-        .video-wrapper { position: relative; width: 100%; aspect-ratio: 16/9; background: #E5E5E5; border-radius: 8px; overflow: hidden; margin-bottom: 15px;}
-        video { display: none; }
-        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+        /* Updated Video Styling: Video is now visible, canvas floats on top */
+        .video-wrapper { position: relative; width: 100%; aspect-ratio: 16/9; background: #000000; border-radius: 8px; overflow: hidden; margin-bottom: 15px;}
+        video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); pointer-events: none; z-index: 10; }
         
         .transcript-box {
-            font-family: 'Newsreader', serif;
-            font-size: 28px;
-            color: #1A1A1A;
-            background: #FFFFFF;
-            min-height: 150px;
-            margin-top: 15px;
-            padding: 20px;
-            border-radius: 8px;
-            border: 1px solid #D95319;
-            line-height: 1.5;
-            word-wrap: break-word;
+            font-family: 'Newsreader', serif; font-size: 28px; color: #1A1A1A; background: #FFFFFF;
+            min-height: 150px; margin-top: 15px; padding: 20px; border-radius: 8px; border: 1px solid #D95319;
+            line-height: 1.5; word-wrap: break-word;
         }
         
         #status { font-weight: 600; color: #D95319; margin-bottom: 10px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;}
         
         /* Thread Controls */
         .controls { display: flex; gap: 15px; margin-bottom: 20px; }
-        button {
-            font-family: 'Newsreader', serif;
-            font-size: 16px;
-            padding: 10px 20px;
-            border-radius: 6px;
-            cursor: pointer;
-            border: none;
-            transition: 0.2s;
-            font-weight: 500;
-        }
+        button { font-family: 'Newsreader', serif; font-size: 16px; padding: 10px 20px; border-radius: 6px; cursor: pointer; border: none; transition: 0.2s; font-weight: 500; }
         .btn-primary { background: #D95319; color: white; }
         .btn-primary:hover { background: #C04612; }
         .btn-stop { background: #FFFFFF; border: 1px solid #D95319; color: #D95319; }
@@ -118,7 +94,6 @@
     let ortSession = null;
     let buffer = new Float32Array(TOTAL_FRAMES * FEATURE_DIM);
     
-    // Thread State
     let isRecording = false;
     let fullTranscript = "";
     let lastChar = ""; 
@@ -152,23 +127,26 @@
     async function initONNX() {
         ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/";
         try {
-            ortSession = await ort.InferenceSession.create('./kinesign_transformer.onnx');
+            // Removed the ./ to avoid GitHub Pages routing errors
+            ortSession = await ort.InferenceSession.create('kinesign_transformer.onnx');
             document.getElementById('status').innerText = "Edge Engine Online";
+            document.getElementById('status').style.color = "#22C55E"; // Green when successful
         } catch (e) {
-            document.getElementById('status').innerText = "Model Load Failed";
+            // This will now print the exact error to your screen so we know why it failed
+            document.getElementById('status').innerText = `Model Load Failed: ${e.message}`;
+            document.getElementById('status').style.color = "#EF4444"; 
             console.error("ONNX Error:", e);
         }
     }
 
-    // MediaPipe Callback
     function onResults(results) {
         if (canvas.width !== video.videoWidth) {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
         }
         
+        // Video is naturally visible now, so we only clear the overlay canvas
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
         
         let frameSlice = new Float32Array(FEATURE_DIM);
         let maxActivation = 0;
@@ -179,7 +157,7 @@
                 let label = results.multiHandedness[h].label;
                 let offset = (label === "Left") ? 0 : 63;
                 
-                // --- CRITICAL FIX: WRIST NORMALIZATION ---
+                // --- WRIST NORMALIZATION ---
                 let wrist_x = landmarks[0].x;
                 let wrist_y = landmarks[0].y;
                 let wrist_z = landmarks[0].z;
@@ -187,16 +165,13 @@
                 for (let i = 0; i < 21; i++) {
                     let base = offset + (i * 3);
                     
-                    // 1. Send NORMALIZED coordinates to the AI buffer
                     frameSlice[base] = landmarks[i].x - wrist_x;
                     frameSlice[base + 1] = landmarks[i].y - wrist_y;
                     frameSlice[base + 2] = landmarks[i].z - wrist_z;
                     
-                    // Interpretability: Map movement intensity to pseudo-GradCAM heat
                     let activation = Math.abs(landmarks[i].x - 0.5) + Math.abs(landmarks[i].y - 0.5);
                     if(activation > maxActivation) maxActivation = activation;
 
-                    // 2. Draw ABSOLUTE coordinates on the screen for the user
                     let heatColor = `rgba(217, 83, 25, ${Math.min(1.0, activation * 1.5)})`;
                     ctx.fillStyle = heatColor;
                     ctx.beginPath();
@@ -208,7 +183,6 @@
         
         heatmapView.innerText = `Max Frame Activation Heat: ${maxActivation.toFixed(3)}`;
 
-        // Shift buffer left, append new frame
         buffer.set(buffer.subarray(FEATURE_DIM), 0);
         buffer.set(frameSlice, (TOTAL_FRAMES - 1) * FEATURE_DIM);
 
@@ -221,7 +195,6 @@
             const outputMap = await ortSession.run({ input_coordinates: inputTensor });
             const logits = outputMap.transcription_logits.data;
             
-            // Look at the most recent frame's prediction (index 119)
             let frameOffset = (TOTAL_FRAMES - 1) * 28;
             let argmaxIdx = 0, maxLogit = -Infinity;
             
@@ -234,7 +207,6 @@
             
             let char = CHAR_MAP[argmaxIdx];
             
-            // Continuous CTC Logic: Ignore blanks ('-') and deduplicate consecutive identical chars
             if (char !== '-' && char !== lastChar) {
                 fullTranscript += char;
                 outputBox.innerText = fullTranscript.toUpperCase();
@@ -244,20 +216,15 @@
         } catch (err) { console.error(err); }
     }
 
-    // Initialize MediaPipe Hands
     const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
-    hands.setOptions({ 
-        maxNumHands: 2, 
-        modelComplexity: 1, 
-        minDetectionConfidence: 0.5, 
-        minTrackingConfidence: 0.5 
-    });
+    hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
     hands.onResults(onResults);
     
-    // Boot Webcam
     navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 } }).then((stream) => {
         video.srcObject = stream;
         video.addEventListener('loadedmetadata', () => {
+            // Start the actual video player
+            video.play();
             const camera = new Camera(video, {
                 onFrame: async () => { await hands.send({image: video}); },
                 width: 640, height: 360
