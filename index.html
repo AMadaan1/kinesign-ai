@@ -21,7 +21,6 @@
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); display: flex; flex-direction: column;
         }
         
-        /* Video is hidden, Canvas renders everything natively */
         .video-wrapper { position: relative; width: 100%; aspect-ratio: 16/9; background: #000000; border-radius: 8px; overflow: hidden; margin-bottom: 15px;}
         video { display: none; }
         canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
@@ -76,13 +75,14 @@
                 <button id="startBtn" class="btn-primary">Start Thread</button>
                 <button id="stopBtn" class="btn-stop" disabled>Stop Thread</button>
             </div>
-            <div style="font-size: 14px; color: #666;">Rolling Transcription Output:</div>
+            <div style="font-size: 14px; color: #666;">Rolling Transcription Output (4-Sec Buffer):</div>
             <div class="transcript-box" id="output">...</div>
         </div>
     </div>
 </div>
 
 <script>
+    // Blank token (-) is at index 0.
     const CHAR_MAP = "-abcdefghijklmnopqrstuvwxyz ";
     const TOTAL_FRAMES = 120, FEATURE_DIM = 225;
     
@@ -91,7 +91,6 @@
     
     let isRecording = false;
     let fullTranscript = "";
-    let lastChar = ""; 
     
     const video = document.getElementById('webcam');
     const canvas = document.getElementById('skeletal-overlay');
@@ -102,7 +101,6 @@
     document.getElementById('startBtn').addEventListener('click', () => {
         isRecording = true;
         fullTranscript = "";
-        lastChar = "";
         outputBox.innerHTML = '<span class="pulse">● Recording...</span>';
         document.getElementById('startBtn').disabled = true;
         document.getElementById('stopBtn').disabled = false;
@@ -132,6 +130,8 @@
     }
 
     function onResults(results) {
+        if (!video.videoWidth || video.videoWidth === 0) return;
+
         if (canvas.width !== video.videoWidth) {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
@@ -140,7 +140,6 @@
         ctx.save();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         
-        // Render the raw camera feed natively
         if (results.image) {
             ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
         }
@@ -153,19 +152,29 @@
             handDetected = true;
             for (let h = 0; h < results.multiHandLandmarks.length; h++) {
                 let landmarks = results.multiHandLandmarks[h];
-                let label = results.multiHandedness[h].label;
-                let offset = (label === "Left") ? 0 : 63;
                 
                 let wrist_x = landmarks[0].x;
                 let wrist_y = landmarks[0].y;
                 let wrist_z = landmarks[0].z;
                 
                 for (let i = 0; i < 21; i++) {
-                    let base = offset + (i * 3);
+                    // Normalizing against the wrist
+                    let nx = landmarks[i].x - wrist_x;
+                    let ny = landmarks[i].y - wrist_y;
+                    let nz = landmarks[i].z - wrist_z;
                     
-                    frameSlice[base] = landmarks[i].x - wrist_x;
-                    frameSlice[base + 1] = landmarks[i].y - wrist_y;
-                    frameSlice[base + 2] = landmarks[i].z - wrist_z;
+                    // FIX 1: Duplicate the hand into BOTH Left (0-62) and Right (63-125) slots.
+                    // This bypasses the MediaPipe selfie-mirroring bug entirely.
+                    let leftBase = i * 3;
+                    let rightBase = 63 + (i * 3);
+                    
+                    frameSlice[leftBase] = nx;
+                    frameSlice[leftBase + 1] = ny;
+                    frameSlice[leftBase + 2] = nz;
+                    
+                    frameSlice[rightBase] = nx;
+                    frameSlice[rightBase + 1] = ny;
+                    frameSlice[rightBase + 2] = nz;
                     
                     let activation = Math.abs(landmarks[i].x - 0.5) + Math.abs(landmarks[i].y - 0.5);
                     if(activation > maxActivation) maxActivation = activation;
@@ -182,6 +191,7 @@
         ctx.restore();
         heatmapView.innerText = `Max Frame Activation Heat: ${maxActivation.toFixed(3)}`;
 
+        // Shift rolling buffer
         buffer.set(buffer.subarray(FEATURE_DIM), 0);
         buffer.set(frameSlice, (TOTAL_FRAMES - 1) * FEATURE_DIM);
 
@@ -196,23 +206,34 @@
             const outputMap = await ortSession.run({ input_coordinates: inputTensor });
             const logits = outputMap.transcription_logits.data;
             
-            let frameOffset = (TOTAL_FRAMES - 1) * 28;
-            let argmaxIdx = 0, maxLogit = -Infinity;
+            // FIX 2: Full CTC Greedy Decoding over the entire 120-frame buffer
+            let currentSequence = "";
+            let previousClassIdx = 0; // 0 is the Blank Token '-'
             
-            for(let c = 0; c < 28; c++) {
-                if(logits[frameOffset + c] > maxLogit) {
-                    maxLogit = logits[frameOffset + c];
-                    argmaxIdx = c;
+            for(let f = 0; f < TOTAL_FRAMES; f++) {
+                let frameOffset = f * 28;
+                let argmaxIdx = 0;
+                let maxLogit = -Infinity;
+                
+                // Find the highest confidence character for this specific frame
+                for(let c = 0; c < 28; c++) {
+                    if(logits[frameOffset + c] > maxLogit) {
+                        maxLogit = logits[frameOffset + c];
+                        argmaxIdx = c;
+                    }
                 }
+                
+                // If it's not a blank (0) and it's not a duplicate of the exact previous frame
+                if (argmaxIdx !== 0 && argmaxIdx !== previousClassIdx) {
+                    currentSequence += CHAR_MAP[argmaxIdx];
+                }
+                previousClassIdx = argmaxIdx;
             }
             
-            let char = CHAR_MAP[argmaxIdx];
-            
-            if (char !== '-' && char !== lastChar) {
-                fullTranscript += char;
-                outputBox.innerText = fullTranscript.toUpperCase();
+            // Only update the screen if the model actually found a sequence
+            if (currentSequence.trim().length > 0) {
+                outputBox.innerText = currentSequence.toUpperCase();
             }
-            lastChar = char;
 
         } catch (err) { console.error(err); }
     }
@@ -221,37 +242,28 @@
     hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
     hands.onResults(onResults);
     
-    // NATIVE HTML5 VIDEO LOOP (No buggy camera_utils dependency)
     async function startCameraStream() {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 } });
             video.srcObject = stream;
-            
             video.onloadeddata = () => {
                 video.play();
                 processFrame();
             };
         } catch (err) {
-            console.error("Camera access denied or unavailable", err);
+            console.error(err);
             document.getElementById('status').innerText = "Webcam Access Denied";
-            document.getElementById('status').style.color = "#EF4444";
         }
     }
 
     async function processFrame() {
-        // Wait until video has enough data to process
         if (video.readyState >= 2) {
             await hands.send({ image: video });
         }
-        // Recursively call on every new frame
         requestAnimationFrame(processFrame);
     }
 
-    // Initialize Network and Hardware
-    initONNX().then(() => {
-        startCameraStream();
-    });
-
+    initONNX().then(() => { startCameraStream(); });
 </script>
 </body>
 </html>
