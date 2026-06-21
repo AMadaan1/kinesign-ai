@@ -157,9 +157,9 @@
                 let wrist_z = landmarks[0].z;
                 
                 for (let i = 0; i < 21; i++) {
-                    let jitterX = (Math.random() - 0.5) * 0.005;
-                    let jitterY = (Math.random() - 0.5) * 0.005;
-                    let jitterZ = (Math.random() - 0.5) * 0.005;
+                    let jitterX = (Math.random() - 0.5) * 0.0005;
+                    let jitterY = (Math.random() - 0.5) * 0.0005;
+                    let jitterZ = (Math.random() - 0.5) * 0.0005;
 
                     let nx = (landmarks[i].x - wrist_x) + jitterX;
                     let ny = (landmarks[i].y - wrist_y) + jitterY;
@@ -216,7 +216,7 @@
                 let maxLogit = -Infinity;
                 
                 // Let's use a very mild penalty just to keep transitions clean
-                logits[frameOffset + 0] -= 1.0; 
+                logits[frameOffset + 0] -= 2.5; 
                 
                 for(let c = 0; c < 28; c++) {
                     if(logits[frameOffset + c] > maxLogit) {
