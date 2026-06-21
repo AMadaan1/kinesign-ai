@@ -209,6 +209,8 @@
                 let frameOffset = f * 28;
                 let argmaxIdx = 0;
                 let maxLogit = -Infinity;
+
+                logits[frameOffset + 0] -= 2.5;
                 
                 for(let c = 0; c < 28; c++) {
                     if(logits[frameOffset + c] > maxLogit) {
