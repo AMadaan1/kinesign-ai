@@ -157,9 +157,13 @@
                 let wrist_z = landmarks[0].z;
                 
                 for (let i = 0; i < 21; i++) {
-                    let nx = landmarks[i].x - wrist_x;
-                    let ny = landmarks[i].y - wrist_y;
-                    let nz = landmarks[i].z - wrist_z;
+                    let jitterX = (Math.random() - 0.5) * 0.005;
+                    let jitterY = (Math.random() - 0.5) * 0.005;
+                    let jitterZ = (Math.random() - 0.5) * 0.005;
+
+                    let nx = (landmarks[i].x - wrist_x) + jitterX;
+                    let ny = (landmarks[i].y - wrist_y) + jitterY;
+                    let nz = (landmarks[i].z - wrist_z) + jitterZ;
                     
                     // Duplicate normalized points into both Left and Right slots to bypass mirroring issues
                     let leftBase = i * 3;
