@@ -82,7 +82,6 @@
 </div>
 
 <script>
-    // Blank token (-) is at index 0.
     const CHAR_MAP = "-abcdefghijklmnopqrstuvwxyz ";
     const TOTAL_FRAMES = 120, FEATURE_DIM = 225;
     
@@ -158,13 +157,11 @@
                 let wrist_z = landmarks[0].z;
                 
                 for (let i = 0; i < 21; i++) {
-                    // Normalizing against the wrist
                     let nx = landmarks[i].x - wrist_x;
                     let ny = landmarks[i].y - wrist_y;
                     let nz = landmarks[i].z - wrist_z;
                     
-                    // FIX 1: Duplicate the hand into BOTH Left (0-62) and Right (63-125) slots.
-                    // This bypasses the MediaPipe selfie-mirroring bug entirely.
+                    // Duplicate normalized points into both Left and Right slots to bypass mirroring issues
                     let leftBase = i * 3;
                     let rightBase = 63 + (i * 3);
                     
@@ -191,7 +188,6 @@
         ctx.restore();
         heatmapView.innerText = `Max Frame Activation Heat: ${maxActivation.toFixed(3)}`;
 
-        // Shift rolling buffer
         buffer.set(buffer.subarray(FEATURE_DIM), 0);
         buffer.set(frameSlice, (TOTAL_FRAMES - 1) * FEATURE_DIM);
 
@@ -206,16 +202,14 @@
             const outputMap = await ortSession.run({ input_coordinates: inputTensor });
             const logits = outputMap.transcription_logits.data;
             
-            // FIX 2: Full CTC Greedy Decoding over the entire 120-frame buffer
             let currentSequence = "";
-            let previousClassIdx = 0; // 0 is the Blank Token '-'
+            let previousClassIdx = 0; 
             
             for(let f = 0; f < TOTAL_FRAMES; f++) {
                 let frameOffset = f * 28;
                 let argmaxIdx = 0;
                 let maxLogit = -Infinity;
                 
-                // Find the highest confidence character for this specific frame
                 for(let c = 0; c < 28; c++) {
                     if(logits[frameOffset + c] > maxLogit) {
                         maxLogit = logits[frameOffset + c];
@@ -223,14 +217,12 @@
                     }
                 }
                 
-                // If it's not a blank (0) and it's not a duplicate of the exact previous frame
                 if (argmaxIdx !== 0 && argmaxIdx !== previousClassIdx) {
                     currentSequence += CHAR_MAP[argmaxIdx];
                 }
                 previousClassIdx = argmaxIdx;
             }
             
-            // Only update the screen if the model actually found a sequence
             if (currentSequence.trim().length > 0) {
                 outputBox.innerText = currentSequence.toUpperCase();
             }
