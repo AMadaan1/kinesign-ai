@@ -8,7 +8,6 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&display=swap" rel="stylesheet">
     
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js" crossorigin="anonymous"></script>
 
@@ -22,9 +21,9 @@
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); display: flex; flex-direction: column;
         }
         
-        /* THE FIX: Video is opacity 0 so the browser keeps it alive, but it doesn't cause flashing */
+        /* Video is hidden, Canvas renders everything natively */
         .video-wrapper { position: relative; width: 100%; aspect-ratio: 16/9; background: #000000; border-radius: 8px; overflow: hidden; margin-bottom: 15px;}
-        video { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+        video { display: none; }
         canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
         
         .transcript-box {
@@ -133,9 +132,6 @@
     }
 
     function onResults(results) {
-        // Prevent crash if video dimensions aren't ready yet
-        if (!video.videoWidth || video.videoWidth === 0) return;
-
         if (canvas.width !== video.videoWidth) {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
@@ -144,7 +140,7 @@
         ctx.save();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         
-        // Draw the camera feed directly to the canvas to prevent flickering
+        // Render the raw camera feed natively
         if (results.image) {
             ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
         }
@@ -189,7 +185,6 @@
         buffer.set(buffer.subarray(FEATURE_DIM), 0);
         buffer.set(frameSlice, (TOTAL_FRAMES - 1) * FEATURE_DIM);
 
-        // Run inference if recording AND a hand is actually visible
         if (ortSession && isRecording && handDetected) {
             runInference();
         }
@@ -226,19 +221,37 @@
     hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
     hands.onResults(onResults);
     
-    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 } }).then((stream) => {
-        video.srcObject = stream;
-        video.addEventListener('loadedmetadata', () => {
-            video.play();
-            const camera = new Camera(video, {
-                onFrame: async () => { await hands.send({image: video}); },
-                width: 640, height: 360
-            });
-            camera.start();
-        });
+    // NATIVE HTML5 VIDEO LOOP (No buggy camera_utils dependency)
+    async function startCameraStream() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 } });
+            video.srcObject = stream;
+            
+            video.onloadeddata = () => {
+                video.play();
+                processFrame();
+            };
+        } catch (err) {
+            console.error("Camera access denied or unavailable", err);
+            document.getElementById('status').innerText = "Webcam Access Denied";
+            document.getElementById('status').style.color = "#EF4444";
+        }
+    }
+
+    async function processFrame() {
+        // Wait until video has enough data to process
+        if (video.readyState >= 2) {
+            await hands.send({ image: video });
+        }
+        // Recursively call on every new frame
+        requestAnimationFrame(processFrame);
+    }
+
+    // Initialize Network and Hardware
+    initONNX().then(() => {
+        startCameraStream();
     });
-        
-    initONNX();
+
 </script>
 </body>
 </html>
