@@ -208,48 +208,50 @@
             const outputMap = await ortSession.run({ input_coordinates: inputTensor });
             const logits = outputMap.transcription_logits.data;
 
-            // 1. Per-frame argmax, with the blank class treated like every other class.
-            //    (Artificially penalizing blank logits forces the decoder to keep emitting
-            //    letters even on ambiguous/transition frames, which is what produced random
-            //    spurious characters during continuous signing.)
+            // 1. Per-frame argmax via softmax confidence, not raw logits. CTC models are
+            //    "peaky" by design — the correct letter is often the argmax for only one or
+            //    two frames total, with blank dominating everywhere else. So instead of
+            //    requiring a class to repeat across consecutive frames (which a peaky model
+            //    will almost never do), we only trust a frame's prediction if the model's
+            //    confidence in it clears CONFIDENCE_THRESHOLD. Low-confidence frames are
+            //    treated as blank rather than artificially penalizing the blank logit itself.
+            const CONFIDENCE_THRESHOLD = 0.4;
             let classOfFrame = new Int32Array(TOTAL_FRAMES);
             let rawBrainwave = "";
             for (let f = 0; f < TOTAL_FRAMES; f++) {
                 let frameOffset = f * 28;
-                let argmaxIdx = 0;
+
                 let maxLogit = -Infinity;
                 for (let c = 0; c < 28; c++) {
-                    if (logits[frameOffset + c] > maxLogit) {
-                        maxLogit = logits[frameOffset + c];
-                        argmaxIdx = c;
-                    }
+                    if (logits[frameOffset + c] > maxLogit) maxLogit = logits[frameOffset + c];
                 }
-                classOfFrame[f] = argmaxIdx;
+                let sumExp = 0;
+                let probs = new Float32Array(28);
+                for (let c = 0; c < 28; c++) {
+                    probs[c] = Math.exp(logits[frameOffset + c] - maxLogit);
+                    sumExp += probs[c];
+                }
+
+                let argmaxIdx = 0;
+                let bestProb = -1;
+                for (let c = 0; c < 28; c++) {
+                    let p = probs[c] / sumExp;
+                    if (p > bestProb) { bestProb = p; argmaxIdx = c; }
+                }
+
+                classOfFrame[f] = (argmaxIdx !== 0 && bestProb >= CONFIDENCE_THRESHOLD) ? argmaxIdx : 0;
                 rawBrainwave += CHAR_MAP[argmaxIdx];
             }
             console.log("Raw 120-Frame Array:", rawBrainwave);
 
-            // 2. Debounce: a class only counts if it persists for MIN_RUN consecutive frames.
-            //    Single-frame flickers (very common between similar handshapes like G/H, or
-            //    during inter-letter transitions) get collapsed back to blank instead of
-            //    leaking into the transcript.
-            const MIN_RUN = 4;
-            let debounced = new Int32Array(TOTAL_FRAMES);
-            let i = 0;
-            while (i < TOTAL_FRAMES) {
-                let j = i;
-                while (j < TOTAL_FRAMES && classOfFrame[j] === classOfFrame[i]) j++;
-                let runLen = j - i;
-                let fillClass = (runLen >= MIN_RUN) ? classOfFrame[i] : 0;
-                for (let k = i; k < j; k++) debounced[k] = fillClass;
-                i = j;
-            }
-
-            // 3. Standard CTC collapse on the debounced sequence.
+            // 2. Standard CTC collapse: merge consecutive repeats, drop blanks.
+            //    Each confident spike (even a single frame) now produces one letter, and a
+            //    blank gap between two spikes of the same letter correctly yields a double
+            //    letter instead of being merged into one.
             let currentSequence = "";
             let previousClassIdx = 0;
             for (let f = 0; f < TOTAL_FRAMES; f++) {
-                let c = debounced[f];
+                let c = classOfFrame[f];
                 if (c !== 0 && c !== previousClassIdx) {
                     currentSequence += CHAR_MAP[c];
                 }
