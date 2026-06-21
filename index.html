@@ -24,10 +24,10 @@
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); display: flex; flex-direction: column;
         }
         
-        /* Video Styling: Video is visible, canvas floats on top */
+        /* Video hidden, Canvas takes over completely to stop flickering */
         .video-wrapper { position: relative; width: 100%; aspect-ratio: 16/9; background: #000000; border-radius: 8px; overflow: hidden; margin-bottom: 15px;}
-        video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); pointer-events: none; z-index: 10; }
+        video { display: none; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
         
         .transcript-box {
             font-family: 'Newsreader', serif; font-size: 28px; color: #1A1A1A; background: #FFFFFF;
@@ -63,7 +63,7 @@
         <div class="panel">
             <div id="status">Booting Neural Network...</div>
             <div class="video-wrapper">
-                <video id="webcam" autoplay playsinline muted></video>
+                <video id="webcam" playsinline muted></video>
                 <canvas id="skeletal-overlay"></canvas>
             </div>
             
@@ -104,7 +104,6 @@
     const outputBox = document.getElementById('output');
     const heatmapView = document.getElementById('heatmap-data');
 
-    // Controls
     document.getElementById('startBtn').addEventListener('click', () => {
         isRecording = true;
         fullTranscript = "";
@@ -127,10 +126,9 @@
     async function initONNX() {
         ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/";
         try {
-            // Updated to use the merged monolith file
             ortSession = await ort.InferenceSession.create('kinesign_monolith.onnx');
             document.getElementById('status').innerText = "Edge Engine Online";
-            document.getElementById('status').style.color = "#22C55E"; // Green when successful
+            document.getElementById('status').style.color = "#22C55E";
         } catch (e) {
             document.getElementById('status').innerText = `Model Load Failed: ${e.message}`;
             document.getElementById('status').style.color = "#EF4444"; 
@@ -144,18 +142,23 @@
             canvas.height = video.videoHeight;
         }
         
+        ctx.save();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw the camera feed directly to the canvas to prevent flickering
+        ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
         
         let frameSlice = new Float32Array(FEATURE_DIM);
         let maxActivation = 0;
+        let handDetected = false;
 
-        if (results.multiHandLandmarks && results.multiHandedness) {
+        if (results.multiHandLandmarks && results.multiHandedness && results.multiHandLandmarks.length > 0) {
+            handDetected = true;
             for (let h = 0; h < results.multiHandLandmarks.length; h++) {
                 let landmarks = results.multiHandLandmarks[h];
                 let label = results.multiHandedness[h].label;
                 let offset = (label === "Left") ? 0 : 63;
                 
-                // --- WRIST NORMALIZATION ---
                 let wrist_x = landmarks[0].x;
                 let wrist_y = landmarks[0].y;
                 let wrist_z = landmarks[0].z;
@@ -179,12 +182,16 @@
             }
         }
         
+        ctx.restore();
         heatmapView.innerText = `Max Frame Activation Heat: ${maxActivation.toFixed(3)}`;
 
         buffer.set(buffer.subarray(FEATURE_DIM), 0);
         buffer.set(frameSlice, (TOTAL_FRAMES - 1) * FEATURE_DIM);
 
-        if (ortSession && isRecording) runInference();
+        // Only run inference if recording AND a hand is actually visible
+        if (ortSession && isRecording && handDetected) {
+            runInference();
+        }
     }
 
     async function runInference() {
