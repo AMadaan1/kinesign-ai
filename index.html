@@ -167,11 +167,27 @@
                 let wrist_x = landmarks[0].x;
                 let wrist_y = landmarks[0].y;
                 let wrist_z = landmarks[0].z;
-                
+
+                // First pass: wrist-center every landmark so we can compute a
+                // stable scale reference (wrist -> middle-finger MCP, landmark 9)
+                // before writing anything into the feature buffer. This must
+                // match _normalize_hand() in the training script exactly, or the
+                // model receives a different input distribution than it trained on.
+                let centeredX = new Float32Array(21);
+                let centeredY = new Float32Array(21);
+                let centeredZ = new Float32Array(21);
                 for (let i = 0; i < 21; i++) {
-                    let nx = landmarks[i].x - wrist_x;
-                    let ny = landmarks[i].y - wrist_y;
-                    let nz = landmarks[i].z - wrist_z;
+                    centeredX[i] = landmarks[i].x - wrist_x;
+                    centeredY[i] = landmarks[i].y - wrist_y;
+                    centeredZ[i] = landmarks[i].z - wrist_z;
+                }
+                const MID_MCP = 9;
+                let scale = Math.sqrt(centeredX[MID_MCP] ** 2 + centeredY[MID_MCP] ** 2) + 1e-6;
+
+                for (let i = 0; i < 21; i++) {
+                    let nx = centeredX[i] / scale;
+                    let ny = centeredY[i] / scale;
+                    let nz = centeredZ[i] / scale;
 
                     frameSlice[base + i * 3]     = nx;
                     frameSlice[base + i * 3 + 1] = ny;
