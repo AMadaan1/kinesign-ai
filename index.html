@@ -39,7 +39,9 @@
         .btn-primary:hover { background: #C04612; }
         .btn-stop { background: #FFFFFF; border: 1px solid #D95319; color: #D95319; }
         .btn-stop:hover { background: #FFF5F0; }
-        .btn-stop:disabled { border-color: #E5E5E5; color: #A0A0A0; background: #FAFAFA; cursor: not-allowed; }
+        .btn-util { background: #FFFFFF; border: 1px solid #E5E5E5; color: #444; }
+        .btn-util:hover { background: #F5F5F5; }
+        .btn-util:disabled { color: #C0C0C0; background: #FAFAFA; cursor: not-allowed; }
 
         details { margin-top: 15px; border-top: 1px solid #E5E5E5; padding-top: 15px; font-size: 15px; color: #666; }
         summary { cursor: pointer; font-weight: 500; color: #D95319; outline: none; margin-bottom: 10px;}
@@ -74,6 +76,8 @@
             <div class="controls">
                 <button id="startBtn" class="btn-primary">Start Thread</button>
                 <button id="stopBtn" class="btn-stop" disabled>Stop Thread</button>
+                <button id="backspaceBtn" class="btn-util" disabled>⌫</button>
+                <button id="clearBtn" class="btn-util" disabled>Clear</button>
             </div>
             <div style="font-size: 14px; color: #666;">Rolling Transcription Output (4-Sec Buffer):</div>
             <div class="transcript-box" id="output">...</div>
@@ -92,7 +96,10 @@
     let fullTranscript = "";
     let frameCounter = 0;
     let inferenceBusy = false;
-    const INFERENCE_EVERY_N_FRAMES = 6; // ~5x/sec at 30fps webcam, instead of every frame
+    let lockoutUntil = 0;                    // timestamp — inference is blocked until this
+    const INFERENCE_EVERY_N_FRAMES = 6;
+    const LOCKOUT_MS = 900;                  // pause after each confirmed letter (ms)
+    const FLASH_MS = 120;                    // how long the white "cleared" flash shows
     
     const video = document.getElementById('webcam');
     const canvas = document.getElementById('skeletal-overlay');
@@ -103,9 +110,13 @@
     document.getElementById('startBtn').addEventListener('click', () => {
         isRecording = true;
         fullTranscript = "";
+        lockoutUntil = 0;
+        buffer.fill(0);
         outputBox.innerHTML = '<span class="pulse">● Recording...</span>';
         document.getElementById('startBtn').disabled = true;
         document.getElementById('stopBtn').disabled = false;
+        document.getElementById('backspaceBtn').disabled = false;
+        document.getElementById('clearBtn').disabled = false;
         document.getElementById('startBtn').style.background = "#E5E5E5";
         document.getElementById('startBtn').style.color = "#A0A0A0";
     });
@@ -114,8 +125,22 @@
         isRecording = false;
         document.getElementById('startBtn').disabled = false;
         document.getElementById('stopBtn').disabled = true;
+        document.getElementById('backspaceBtn').disabled = true;
+        document.getElementById('clearBtn').disabled = true;
         document.getElementById('startBtn').style.background = "#D95319";
         document.getElementById('startBtn').style.color = "white";
+    });
+
+    document.getElementById('backspaceBtn').addEventListener('click', () => {
+        fullTranscript = fullTranscript.slice(0, -1);
+        outputBox.innerText = fullTranscript || "";
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+        fullTranscript = "";
+        outputBox.innerText = "";
+        buffer.fill(0);
+        lockoutUntil = 0;
     });
 
     async function initONNX() {
@@ -212,7 +237,22 @@
         buffer.set(frameSlice, (TOTAL_FRAMES - 1) * FEATURE_DIM);
 
         frameCounter++;
-        if (ortSession && isRecording && handDetected && !inferenceBusy && frameCounter % INFERENCE_EVERY_N_FRAMES === 0) {
+
+        // Draw a brief white flash so the user knows the buffer was cleared
+        const now = Date.now();
+        if (now < lockoutUntil) {
+            const flashFraction = 1 - (now - (lockoutUntil - LOCKOUT_MS)) / FLASH_MS;
+            if (flashFraction > 0) {
+                ctx.save();
+                ctx.fillStyle = `rgba(255, 255, 255, ${Math.min(1, flashFraction) * 0.7})`;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.restore();
+            }
+        }
+
+        if (ortSession && isRecording && handDetected && !inferenceBusy
+                && now >= lockoutUntil
+                && frameCounter % INFERENCE_EVERY_N_FRAMES === 0) {
             runInference();
         }
     }
@@ -275,7 +315,14 @@
             }
 
             if (currentSequence.trim().length > 0) {
-                outputBox.innerText = currentSequence.toUpperCase();
+                // Append to running transcript (don't overwrite — old result is already confirmed)
+                fullTranscript += currentSequence.toUpperCase();
+                outputBox.innerText = fullTranscript;
+
+                // Zero the entire buffer so stale frames from THIS sign can't bleed into
+                // the next inference call and cause the "deletes-then-re-predicts" flicker.
+                buffer.fill(0);
+                lockoutUntil = Date.now() + LOCKOUT_MS;
             }
 
         } catch (err) {
