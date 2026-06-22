@@ -316,7 +316,7 @@
 
             if (currentSequence.trim().length > 0) {
                 // Append to running transcript (don't overwrite — old result is already confirmed)
-                fullTranscript += currentSequence.toUpperCase();
+                fullTranscript += currentSequence[0].toUpperCase();
                 outputBox.innerText = fullTranscript;
 
                 // Zero the entire buffer so stale frames from THIS sign can't bleed into
